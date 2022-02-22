@@ -12,7 +12,8 @@ formatter = logging.Formatter("%(asctime)s - (%(levelname)s) - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-BASE_URL = "http://books.toscrape.com/catalogue/"
+base_url = "http://books.toscrape.com/catalogue/"
+url_page = base_url + "page-{}.html"
 
 
 @retry(tries=5, delay=2, backoff=2, logger=logger)
@@ -20,14 +21,38 @@ def url_to_beautiful_soup(url):
     logger.debug(f"Getting {url}")
     return BeautifulSoup(urlopen(url).read().decode("utf-8"), features="html.parser")
 
-def books_to_scrape_to_dataframe():
 
+def get_book_info(n_page):
+    books = []
+    for book_info in (
+        url_to_beautiful_soup(url=url_page.format(n_page))
+        .find("ol", {"class": "row"})
+        .findAll("li")[1:]
+    ):
+
+        book_soup = url_to_beautiful_soup(
+            url=base_url + book_info.find("a").get("href")
+        )
+        book = {
+            "Title": book_soup.h1.get_text(),
+            "Price": book_soup.find("p", {"class": "price_color"}).get_text(),
+            "Availability": book_soup.find("p", {"class": "instock"}).text.strip(),
+            "Rating": book_soup.find("p", {"class": "star-rating"}).get("class")[1],
+        }
+
+        for item_cat in book_soup.find("ul", {"class": "breadcrumb"}).findAll("a"):
+
+            if item_cat.get_text() not in ("Home", "Books"):
+                book["Category"] = item_cat.get_text()
+
+        books.append(book)
+    return books
+
+
+def save_pages_info():
     soup_principal = url_to_beautiful_soup(url="http://books.toscrape.com")
 
     books = []
-
-    base_url = "http://books.toscrape.com/catalogue/"
-    url_page = base_url + "page-{}.html"
 
     for n_page in range(
         1,
@@ -40,31 +65,11 @@ def books_to_scrape_to_dataframe():
         )
         + 1,
     ):
-
-        for book_info in (
-            url_to_beautiful_soup(url=url_page.format(n_page))
-            .find("ol", {"class": "row"})
-            .findAll("li")[1:]
-        ):
-
-            book_soup = url_to_beautiful_soup(
-                url=base_url + book_info.find("a").get("href")
-            )
-            book = {
-                "Title": book_soup.h1.get_text(),
-                "Price": book_soup.find("p", {"class": "price_color"}).get_text(),
-                "Availability": book_soup.find("p", {"class": "instock"}).text.strip(),
-                "Rating": book_soup.find("p", {"class": "star-rating"}).get("class")[1],
-            }
-
-            for item_cat in book_soup.find("ul", {"class": "breadcrumb"}).findAll("a"):
-
-                if item_cat.get_text() not in ("Home", "Books"):
-                    book["Category"] = item_cat.get_text()
-
-            books.append(book)
+        book_list = get_book_info(n_page)
+        books.extend(book_list)
     return pd.DataFrame(books)
 
-if __name__ == '__main__':
-    df = books_to_scrape_to_dataframe()
-    df.to_csv('books.csv',index=False)
+
+if __name__ == "__main__":
+    df = save_pages_info()
+    df.to_csv("books_2.csv", index=False)
