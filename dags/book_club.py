@@ -1,96 +1,40 @@
-import os
-from datetime import datetime, timedelta, date
-from urllib.request import urlopen
+from datetime import datetime, timedelta
 
-import pandas as pd
-from airflow.decorators import dag, task
-from bs4 import BeautifulSoup
-from yaml import load
-from yaml.loader import Loader
+from airflow.decorators import dag
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import PythonOperator
+from airflow.utils.task_group import TaskGroup
 
-base_url = "http://books.toscrape.com/catalogue/"
-url_page = base_url + "page-{}.html"
-
-
-def url_to_beautiful_soup(url):
-    print((f"Getting {url}"))
-    return BeautifulSoup(urlopen(url).read().decode("utf-8"), features="html.parser")
-
-
-def _get_book_info(n_page):
-    books = []
-    for book_info in (
-            url_to_beautiful_soup(url=url_page.format(n_page))
-                    .find("ol", {"class": "row"})
-                    .findAll("li")[1:]
-    ):
-
-        book_soup = url_to_beautiful_soup(
-            url=base_url + book_info.find("a").get("href")
-        )
-        book = {
-            "Title": book_soup.h1.get_text(),
-            "Price": book_soup.find("p", {"class": "price_color"}).get_text(),
-            "Availability": book_soup.find("p", {"class": "instock"}).text.strip(),
-            "Rating": book_soup.find("p", {"class": "star-rating"}).get("class")[1],
-        }
-
-        for item_cat in book_soup.find("ul", {"class": "breadcrumb"}).findAll("a"):
-
-            if item_cat.get_text() not in ("Home", "Books"):
-                book["Category"] = item_cat.get_text()
-
-        books.append(book)
-    return books
-
-
-def _setup_credentials():
-    with open('./google.yaml', 'r') as f:
-        dict_vars = load(f, Loader)
-
-    for var in dict_vars:
-        os.environ[var] = dict_vars[var]
-
-    print('Credentials OK')
-
+from scripts.book_club_scripts import get_range_pages, get_book_info
 
 default_args = {
-    'start_date': datetime(2022, 5, 24),
+    'start_date': datetime(2022, 5, 1),
     'retries': 5,
-    'retry_delay': timedelta(seconds=15),
+    'retry_delay': timedelta(seconds=120),
+    'catchup': True,
 }
 
 
-@dag('book_club_dag', schedule_interval='0 17 * * *', default_args=default_args, catchup=False)
+@dag('book_club_two_pointo_dag', schedule_interval='30 12 * * *', max_active_runs=1, default_args=default_args,
+     concurrency=5)
 def book_club_dag():
-    @task
-    def extract_pages_info(limit_pages=None):
-        soup_principal = url_to_beautiful_soup(url="http://books.toscrape.com")
+    with TaskGroup('extract_and_load_pages') as extract_and_load:
+        [
+            PythonOperator(
+                task_id=f"extract_page_{str(page).zfill(2)}",
+                python_callable=get_book_info,
+                op_kwargs={
+                    "n_page": page,
+                    "logical_date": "{{ ds_nodash }}"
+                }
+            ) for page in get_range_pages()
+        ]
 
-        books = []
-        final_page = limit_pages if limit_pages else int(
-            soup_principal.find("li", {"class": "current"})
-                .get_text()
-                .replace("\n", "")
-                .replace(" ", "")
-                .split("of")[-1]
-        ) + 1
-        for n_page in range(1, final_page):
-            book_list = _get_book_info(n_page)
-            books.extend(book_list)
+    end_tasks = EmptyOperator(
+        task_id="End"
+    )
 
-        pd_books = pd.DataFrame(books)
-
-        return pd_books
-
-    @task
-    def save_to_gcs_bucket(dataframe):
-        _setup_credentials()
-
-        dataframe.to_csv(f'gs://book_club/raw/book_club_raw_{date.today().strftime("%Y%m%d")}.csv', index=False)
-        print('Salvo com sucesso!')
-
-    save_to_gcs_bucket(extract_pages_info())
+    extract_and_load >> end_tasks
 
 
 dag = book_club_dag()
