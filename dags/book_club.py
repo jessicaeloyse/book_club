@@ -15,7 +15,7 @@ default_args = {
 }
 
 
-@dag('book_club_two_pointo_dag', schedule_interval='30 12 * * *', max_active_runs=1, default_args=default_args,
+@dag('book_club_dag', schedule_interval='30 12 * * *', max_active_runs=1, default_args=default_args,
      concurrency=5)
 def book_club_dag():
     with TaskGroup('extract_and_load_pages') as extract_and_load:
